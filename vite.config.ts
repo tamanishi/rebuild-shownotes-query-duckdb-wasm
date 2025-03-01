@@ -7,9 +7,12 @@ export default defineConfig(({ mode }) => {
     return {
       build: {
         rollupOptions: {
-          input: './src/client.ts',
+          input: {
+            client: './src/client.ts',
+            worker: './src/worker.ts'
+          },
           output: {
-            entryFileNames: 'static/client.js',
+            entryFileNames: 'static/[name].js',
           },
         },
       }

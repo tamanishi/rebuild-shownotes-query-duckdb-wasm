@@ -15,8 +15,8 @@ let db: duckdb.AsyncDuckDB | null = null
 let conn: duckdb.AsyncDuckDBConnection | null = null
 let stmt: duckdb.AsyncPreparedStatement | null = null
 
-let cachedWorkerUrl: string | null = null;
-let cachedWasmUrl: string | null = null;
+let cachedWorkerUrl: string | null = null
+let cachedWasmUrl: string | null = null
 
 // Query
 const query = `
@@ -47,7 +47,7 @@ const query = `
         WHERE S.episodeId = E.id
             AND S.title LIKE '%' || ? || '%'
     )
-    ORDER BY E.pubDate DESC;
+    ORDER BY E.pubDate DESC, S.id ASC;
 `
 // Type definition
 type Shownote = {
@@ -62,77 +62,121 @@ type Episode = {
     shownotes: Shownote[]
 }
 
+// Check if Safari for wasm file caching
+const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+
 async function createWorker(url: string) {
     try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const text = await response.text();
-        const blob = new Blob([text], {type: 'application/javascript'});
-        return new Worker(URL.createObjectURL(blob));
+        const response = await fetch(url)
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+        const text = await response.text()
+        const blob = new Blob([text], {type: 'application/javascript'})
+        const worker = new Worker(URL.createObjectURL(blob))
+        return worker
     } catch (error) {
-        console.error('Worker creation failed:', error);
-        throw new Error('Failed to initialize Web Worker');
+        console.error('Worker creation failed:', error)
+        throw new Error('Failed to initialize Web Worker')
     }
 }
 
 async function cacheFile(url: string, fileName: string): Promise<string> {
     try {
-        const root = await navigator.storage.getDirectory();
+        const root = await navigator.storage.getDirectory()
         try {
-            const fileHandle = await root.getFileHandle(fileName);
-            const file = await fileHandle.getFile();
-            return URL.createObjectURL(file);
+            const fileHandle = await root.getFileHandle(fileName)
+            const file = await fileHandle.getFile()
+            const objectUrl = URL.createObjectURL(file)
+            return objectUrl
         } catch {
-            const response = await fetch(url);
+            const response = await fetch(url)
             if (!response.ok) {
-                throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+                throw new Error(`Failed to fetch ${url}: ${response.statusText}`)
             }
-            const blob = await response.blob();
-            const fileHandle = await root.getFileHandle(fileName, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-            return URL.createObjectURL(blob);
+            const blob = await response.blob()
+            const fileHandle = await root.getFileHandle(fileName, { create: true })
+            if (isSafari) {
+                const worker = new Worker('/static/worker.js')
+                worker.postMessage({ fileName, blob })
+                worker.onmessage = function(event: MessageEvent) {
+                    if (!event.data.success) {
+                        console.error('Failed to write file in Safari:', event.data.error)
+                    }
+                }
+            } else {
+                const writable = await fileHandle.createWritable()
+                await writable.write(blob)
+                await writable.close()
+            }
+            const objectUrl = URL.createObjectURL(blob)
+            const cacheResponse = await fetch(objectUrl)
+            if (!cacheResponse.ok) {
+                throw new Error(`Failed to fetch WASM file: ${cacheResponse.statusText}`)
+            }
+            return objectUrl
         }
     } catch (error) {
-        console.error('Failed to cache file:', error);
-        return url;
+        console.error('Failed to cache file:', error)
+        return url
     }
 }
 
 export async function initDB() {
     if (typeof window === 'undefined') return
 
-    const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
+    try {
+        const bundle = await duckdb.selectBundle(MANUAL_BUNDLES)
  
-    cachedWorkerUrl = await cacheFile(bundle.mainWorker!, 'duckdb-worker.js')
-    cachedWasmUrl = await cacheFile(bundle.mainModule!, 'duckdb-wasm.wasm')
+        const [workerUrl, wasmUrl] = await Promise.all([
+            cacheFile(bundle.mainWorker!, 'duckdb-worker.js'),
+            cacheFile(bundle.mainModule!, 'duckdb-wasm.wasm')
+        ])
 
-    const worker = await createWorker(cachedWorkerUrl)
-    const logger = new duckdb.ConsoleLogger()
-    
-    db = new duckdb.AsyncDuckDB(logger, worker)
-    await db.instantiate(cachedWasmUrl)
+        cachedWorkerUrl = workerUrl
+        cachedWasmUrl = wasmUrl
 
-    conn = await db.connect()
+        const worker = await createWorker(cachedWorkerUrl)
+        const logger = new duckdb.ConsoleLogger()
+        
+        db = new duckdb.AsyncDuckDB(logger, worker)
 
-    if (import.meta.env.PROD) {
-        await conn.query(`
-            CREATE TABLE Episodes AS SELECT * FROM read_parquet('https://raw.githubusercontent.com/tamanishi/check-rebuild-feed/refs/heads/main/Episodes.parquet');
-            CREATE TABLE Shownotes AS SELECT * FROM read_parquet('https://raw.githubusercontent.com/tamanishi/check-rebuild-feed/refs/heads/main/Shownotes.parquet');
-        `)
-    } else {
-        await conn.query(`
-            CREATE TABLE Episodes AS SELECT * FROM read_parquet('http://localhost:5173/static/episodes.parquet');
-            CREATE TABLE Shownotes AS SELECT * FROM read_parquet('http://localhost:5173/static/shownotes.parquet');
-        `)
+        try {
+            const response = await fetch(cachedWasmUrl)
+            if (!response.ok) {
+                throw new Error(`Failed to fetch WASM file: ${response.statusText}`)
+            }
+            const wasmBlob = await response.blob()
+
+            // Convert the blob to an ArrayBuffer
+            const arrayBuffer = await wasmBlob.arrayBuffer()
+            const wasmFile = new Blob([arrayBuffer], { type: 'application/wasm' })
+            const wasmUrl = URL.createObjectURL(wasmFile)
+            await db.instantiate(wasmUrl, bundle.pthreadWorker)
+        } catch (error) {
+            console.error('Failed to instaintiate DuckDB:', error)
+        }
+
+        conn = await db.connect()
+
+        if (import.meta.env.PROD) {
+            await conn.query(`
+                CREATE TABLE Episodes AS SELECT * FROM read_parquet('https://raw.githubusercontent.com/tamanishi/check-rebuild-feed/refs/heads/main/Episodes.parquet');
+                CREATE TABLE Shownotes AS SELECT * FROM read_parquet('https://raw.githubusercontent.com/tamanishi/check-rebuild-feed/refs/heads/main/Shownotes.parquet');
+            `)
+        } else {
+            await conn.query(`
+                CREATE TABLE Episodes AS SELECT * FROM read_parquet('http://localhost:5173/static/episodes.parquet');
+                CREATE TABLE Shownotes AS SELECT * FROM read_parquet('http://localhost:5173/static/shownotes.parquet');
+            `)
+        }
+
+        // Keep statement
+        stmt = await conn.prepare(query)
+
+        // Show all records on initial load
+        await search()
+    } catch (error) {
+        console.error('Failed to initialize DB:', error)
     }
-
-    // Keep statement
-    stmt = await conn.prepare(query)
-
-    // Show all records on initial load
-    await search()
 }
 
 export async function search() {
@@ -192,7 +236,7 @@ export async function search() {
             const marked_title = keywordValue === '' ? 
                 episode.title : 
                 episode.title.replace(regex, '<mark>$&</mark>')
-            const pubDate = DateTime.fromISO(episode.pubDate).toFormat('yyyy/LL/dd')
+            const pubDate = DateTime.fromISO(episode.pubDate, {zone: 'America/Los_Angeles'}).toFormat('yyyy/LL/dd')
 
             const shownotesHTML = episode.shownotes
                 .filter(s => s.title !== null)
@@ -244,11 +288,13 @@ export async function cleanup() {
     if (conn) await conn.close()
     if (db) await db.terminate()
 
-    if (cachedWorkerUrl) URL.revokeObjectURL(cachedWorkerUrl)
-    if (cachedWasmUrl) URL.revokeObjectURL(cachedWasmUrl)
+    if (isSafari) {
+        if (cachedWorkerUrl) URL.revokeObjectURL(cachedWorkerUrl)
+        if (cachedWasmUrl) URL.revokeObjectURL(cachedWasmUrl)
+        cachedWorkerUrl = null
+        cachedWasmUrl = null
+    }
 
-    cachedWorkerUrl = null
-    cachedWasmUrl = null
 }
 
 // Register functions globally
@@ -274,6 +320,6 @@ if (typeof window !== 'undefined') {
 
 declare global {
     interface Window {
-        search: typeof search;
+        search: typeof search
     }
 }
