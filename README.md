@@ -1,10 +1,10 @@
 ```sh
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 ```sh
-npm run deploy
+bun run deploy
 ```
 
 ```sh
@@ -14,5 +14,5 @@ wrangler r2 object put duckdb-assets/duckdb-browser-eh.worker.js --file node_mod
  ```
 
 ```sh
-wrangler r2 bucket cors put duckdb-assets --cors-file=cors.json
+wrangler r2 bucket cors set duckdb-assets --file=cors.json
 ```
