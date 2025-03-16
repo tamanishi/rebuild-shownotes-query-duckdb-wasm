@@ -12,12 +12,16 @@ export const renderer = jsxRenderer(
             <html>
                 <head>
                     <title>{title}</title>
-                    <link href="/static/style.css" rel="stylesheet" />
-                    <script src="https://cdn.tailwindcss.com"></script>
                     {import.meta.env.PROD ? (
-                        <script type="module" src="/static/client.js"></script>
+                        <>
+                        <link href="/static/style.css" rel="stylesheet" />
+                        <script type="module" src="/static/client.js" />
+                        </>
                     ) : (
-                        <script type="module" src="/src/client.ts"></script>
+                        <>
+                        <script type="module" src="/src/client.ts" />
+                        <link href="/src/style.css" rel="stylesheet" />
+                        </>
                     )}
                 </head>
                 <body>

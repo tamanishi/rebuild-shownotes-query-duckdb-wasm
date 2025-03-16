@@ -30,7 +30,7 @@ const query = `
         S.link AS s_link
     FROM Episodes E
     JOIN Shownotes S ON E.id = S.episodeId
-    WHERE S.title LIKE '%' || ? || '%'
+    WHERE S.title ILIKE '%' || ? || '%'
     UNION ALL
     -- (2) Get records where only episodes contain the keyword (no matching shownotes)
     SELECT E.id AS e_id,
@@ -41,11 +41,11 @@ const query = `
         NULL AS s_title,
         NULL AS s_link
     FROM Episodes E
-    WHERE E.title LIKE '%' || ? || '%'
+    WHERE E.title ILIKE '%' || ? || '%'
     AND NOT EXISTS (
         SELECT 1 FROM Shownotes S
         WHERE S.episodeId = E.id
-            AND S.title LIKE '%' || ? || '%'
+            AND S.title ILIKE '%' || ? || '%'
     )
     ORDER BY E.pubDate DESC, S.id ASC;
 `
